@@ -1,0 +1,103 @@
+name: Build DSH iPhone IPA
+
+"on":
+  workflow_dispatch:
+    inputs:
+      bundle_id_prefix:
+        description: "Bundle prefix; the project appends .dsh"
+        required: true
+        default: "com.example.dshios"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      DSH_BUNDLE_PREFIX: ${{ inputs.bundle_id_prefix }}
+      COPYFILE_DISABLE: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check ARM64 and Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          xcodebuild -version
+          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 27([.[:space:]]|$)'
+          xcrun --sdk iphoneos --show-sdk-version
+          printf '%s\n' "$DSH_BUNDLE_PREFIX" | grep -Eq '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install meson ninja lld node@22 ruby
+          export PATH="$(brew --prefix ruby)/bin:$(brew --prefix node@22)/bin:$(brew --prefix lld)/bin:$PATH"
+          gem install xcodeproj --no-document
+          printf '%s\n' "$(brew --prefix ruby)/bin" >> "$GITHUB_PATH"
+          printf '%s\n' "$(brew --prefix node@22)/bin" >> "$GITHUB_PATH"
+          printf '%s\n' "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          command -v ld.lld
+          node -v
+          ruby -r xcodeproj -e 'puts "xcodeproj OK"'
+
+      - name: Build emulator and bundled Linux environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          make emulator
+          make rootfs
+          test -s build/root.tar.gz
+          make project
+
+      - name: Build unsigned app for a physical iPhone
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project DSH.xcodeproj \
+            -scheme DSH \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            CODE_SIGN_ENTITLEMENTS= \
+            DEVELOPMENT_TEAM= \
+            DSH_DEVELOPMENT_TEAM= \
+            "DSH_BUNDLE_ID_PREFIX=$DSH_BUNDLE_PREFIX" \
+            build
+
+      - name: Verify and package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          DSH_APP_PATH="$PWD/build/DerivedData/Build/Products/Release-iphoneos/DSH.app"
+          test -s "$DSH_APP_PATH/DSH"
+          test -s "$DSH_APP_PATH/root.tar.gz"
+          xcrun vtool -show-build "$DSH_APP_PATH/DSH" | tee build/device-platform.txt
+          grep -Eq 'platform[[:space:]]+IOS([[:space:]]|$)' build/device-platform.txt
+          mkdir -p build/ipa/Payload
+          ditto "$DSH_APP_PATH" build/ipa/Payload/DSH.app
+          cd build/ipa
+          zip -qry DSH-unsigned.ipa Payload
+          shasum -a 256 DSH-unsigned.ipa > DSH-unsigned.ipa.sha256
+
+      - name: Upload IPA and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSH-iPhone-unsigned
+          path: |
+            build/ipa/DSH-unsigned.ipa
+            build/ipa/DSH-unsigned.ipa.sha256
+            build/device-platform.txt
+          if-no-files-found: error
+          retention-days: 7
