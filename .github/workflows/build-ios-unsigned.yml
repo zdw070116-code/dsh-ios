@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install meson ninja lld node@22 ruby
+          brew install meson ninja lld node@22 ruby libarchive
           export PATH="$(brew --prefix ruby)/bin:$(brew --prefix node@22)/bin:$(brew --prefix lld)/bin:$PATH"
           gem install xcodeproj --no-document
           printf '%s\n' "$(brew --prefix ruby)/bin" >> "$GITHUB_PATH"
